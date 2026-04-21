@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: production
+  labels:
+    app: my-app
+    version: stable
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+  # Rolling update strategy — zero downtime
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # Allow 1 extra pod during update
+      maxUnavailable: 0    # Never take a pod down before new one is ready
+  template:
+    metadata:
+      labels:
+        app: my-app
+        version: stable
+    spec:
+      containers:
+        - name: my-app
+          image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app:latest
+          ports:
+            - containerPort: 3000
+          # Resource limits — prevents any one pod hogging the node
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          # Liveness probe — restart pod if app is stuck
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          # Readiness probe — only send traffic when app is truly ready
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Load secrets from AWS Secrets Manager via env
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+      # Spread pods across availability zones
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - my-app
+                topologyKey: topology.kubernetes.io/zone

@@ -1,0 +1,202 @@
+---
+# Ansible Playbook — Deploy Monitoring Stack
+# Installs Node Exporter, Prometheus, Grafana, and CloudWatch Agent
+# on all target hosts defined in inventory.
+#
+# Usage:
+#   ansible-playbook install-monitoring.yml -i inventory/hosts.yml
+
+- name: Install Node Exporter on all app servers
+  hosts: app_servers
+  become: true   # Run as root (sudo)
+
+  vars:
+    node_exporter_version: "1.7.0"
+    node_exporter_port: 9100
+
+  tasks:
+
+    - name: Create node_exporter user (no login shell for security)
+      user:
+        name: node_exporter
+        shell: /sbin/nologin
+        system: true
+
+    - name: Download Node Exporter binary
+      get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+        dest: /tmp/node_exporter.tar.gz
+        mode: '0644'
+
+    - name: Extract Node Exporter
+      unarchive:
+        src: /tmp/node_exporter.tar.gz
+        dest: /tmp/
+        remote_src: true
+
+    - name: Copy Node Exporter binary to /usr/local/bin
+      copy:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
+        dest: /usr/local/bin/node_exporter
+        owner: node_exporter
+        group: node_exporter
+        mode: '0755'
+        remote_src: true
+
+    - name: Create Node Exporter systemd service
+      copy:
+        dest: /etc/systemd/system/node_exporter.service
+        content: |
+          [Unit]
+          Description=Node Exporter
+          After=network.target
+
+          [Service]
+          User=node_exporter
+          ExecStart=/usr/local/bin/node_exporter --web.listen-address=:{{ node_exporter_port }}
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start Node Exporter
+      systemd:
+        name: node_exporter
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Open firewall port for Node Exporter
+      firewalld:
+        port: "{{ node_exporter_port }}/tcp"
+        permanent: true
+        state: enabled
+      ignore_errors: true   # Not all systems use firewalld
+
+- name: Install CloudWatch Agent on all app servers
+  hosts: app_servers
+  become: true
+
+  tasks:
+
+    - name: Download CloudWatch Agent installer
+      get_url:
+        url: "https://s3.amazonaws.com/amazoncloudwatch-agent/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm"
+        dest: /tmp/amazon-cloudwatch-agent.rpm
+
+    - name: Install CloudWatch Agent
+      yum:
+        name: /tmp/amazon-cloudwatch-agent.rpm
+        state: present
+
+    - name: Copy CloudWatch Agent config
+      copy:
+        src: ../cloudwatch/cloudwatch-agent.json
+        dest: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Start CloudWatch Agent with config
+      command: >
+        /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl
+        -a fetch-config -m ec2 -s
+        -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+- name: Install Prometheus on monitoring server
+  hosts: monitoring_server
+  become: true
+
+  vars:
+    prometheus_version: "2.50.0"
+    prometheus_port: 9090
+
+  tasks:
+
+    - name: Create prometheus user
+      user:
+        name: prometheus
+        shell: /sbin/nologin
+        system: true
+
+    - name: Create Prometheus directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: prometheus
+        group: prometheus
+        mode: '0755'
+      loop:
+        - /etc/prometheus
+        - /var/lib/prometheus
+
+    - name: Download Prometheus
+      get_url:
+        url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+        dest: /tmp/prometheus.tar.gz
+
+    - name: Extract Prometheus
+      unarchive:
+        src: /tmp/prometheus.tar.gz
+        dest: /tmp/
+        remote_src: true
+
+    - name: Copy Prometheus binaries
+      copy:
+        src: "/tmp/prometheus-{{ prometheus_version }}.linux-amd64/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        owner: prometheus
+        group: prometheus
+        mode: '0755'
+        remote_src: true
+      loop:
+        - prometheus
+        - promtool
+
+    - name: Copy Prometheus config
+      copy:
+        src: ../prometheus/prometheus.yml
+        dest: /etc/prometheus/prometheus.yml
+        owner: prometheus
+        group: prometheus
+
+    - name: Copy alert rules
+      copy:
+        src: ../prometheus/alert-rules.yml
+        dest: /etc/prometheus/alert-rules.yml
+        owner: prometheus
+        group: prometheus
+
+    - name: Create Prometheus systemd service
+      copy:
+        dest: /etc/systemd/system/prometheus.service
+        content: |
+          [Unit]
+          Description=Prometheus Monitoring
+          After=network.target
+
+          [Service]
+          User=prometheus
+          ExecStart=/usr/local/bin/prometheus \
+            --config.file=/etc/prometheus/prometheus.yml \
+            --storage.tsdb.path=/var/lib/prometheus \
+            --storage.tsdb.retention.time=30d \
+            --web.listen-address=:{{ prometheus_port }}
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start Prometheus
+      systemd:
+        name: prometheus
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Verify Prometheus is running
+      uri:
+        url: "http://localhost:{{ prometheus_port }}/-/healthy"
+        status_code: 200
+      retries: 5
+      delay: 5

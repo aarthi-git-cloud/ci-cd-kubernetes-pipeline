@@ -1,0 +1,66 @@
+name: PR Validation Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  lint-and-test:
+    name: Lint & Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Run unit tests
+        run: npm test
+
+  docker-build-check:
+    name: Docker Build Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build Docker image (validation only)
+        run: docker build -t my-app:pr-check .
+
+      - name: Run container smoke test
+        run: |
+          docker run -d --name smoke-test -p 3000:3000 my-app:pr-check
+          sleep 5
+          curl -f http://localhost:3000/health || exit 1
+          docker stop smoke-test
+
+  k8s-manifest-check:
+    name: Kubernetes Manifest Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Validate K8s manifests (dry-run)
+        run: |
+          kubectl apply --dry-run=client -f k8s/deployment.yaml
+          kubectl apply --dry-run=client -f k8s/service.yaml
+          kubectl apply --dry-run=client -f k8s/hpa.yaml

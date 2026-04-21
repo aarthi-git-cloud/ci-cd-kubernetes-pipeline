@@ -1,0 +1,57 @@
+global:
+  scrape_interval: 15s        # Pull metrics every 15 seconds
+  evaluation_interval: 15s    # Evaluate alert rules every 15 seconds
+
+# Load alert rules
+rule_files:
+  - "alert-rules.yml"
+
+# Alertmanager connection
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+
+  # Prometheus monitors itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Scrape Node Exporter on all EC2 instances
+  # In production these are discovered via AWS EC2 service discovery
+  - job_name: 'node-exporter'
+    ec2_sd_configs:
+      - region: us-east-1
+        port: 9100
+    relabel_configs:
+      # Use EC2 instance Name tag as label
+      - source_labels: [__meta_ec2_tag_Name]
+        target_label: instance_name
+      - source_labels: [__meta_ec2_tag_Environment]
+        target_label: environment
+
+  # Scrape application /metrics endpoints
+  - job_name: 'app-metrics'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      # Only scrape pods with the annotation prometheus.io/scrape: "true"
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
+  # Kubernetes cluster state metrics
+  - job_name: 'kube-state-metrics'
+    static_configs:
+      - targets: ['kube-state-metrics:8080']

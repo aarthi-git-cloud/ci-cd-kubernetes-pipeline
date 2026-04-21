@@ -1,0 +1,148 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION       = 'us-east-1'
+        ECR_REGISTRY     = '123456789012.dkr.ecr.us-east-1.amazonaws.com'
+        ECR_REPO         = 'my-app'
+        IMAGE_TAG        = "${env.BUILD_NUMBER}"
+        EKS_CLUSTER_NAME = 'my-eks-cluster'
+        K8S_NAMESPACE    = 'production'
+        DEPLOY_STRATEGY  = 'rolling'   // Options: rolling | blue-green
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo "Checking out source code..."
+                checkout scm
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                echo "Running unit tests..."
+                sh '''
+                    # Install dependencies and run tests
+                    # Replace with your app's test command
+                    echo "Tests passed."
+                '''
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                echo "Building Docker image: ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+                sh """
+                    docker build -t ${ECR_REPO}:${IMAGE_TAG} .
+                    docker tag ${ECR_REPO}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                """
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                echo "Pushing image to Amazon ECR..."
+                withAWS(credentials: 'aws-credentials', region: "${AWS_REGION}") {
+                    sh """
+                        aws ecr get-login-password --region ${AWS_REGION} \
+                            | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                    """
+                }
+                // Tag as latest only on main branch
+                script {
+                    if (env.BRANCH_NAME == 'main') {
+                        sh """
+                            docker tag ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG} \
+                                       ${ECR_REGISTRY}/${ECR_REPO}:latest
+                            docker push ${ECR_REGISTRY}/${ECR_REPO}:latest
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                echo "Deploying to EKS cluster: ${EKS_CLUSTER_NAME}"
+                withAWS(credentials: 'aws-credentials', region: "${AWS_REGION}") {
+                    sh """
+                        aws eks update-kubeconfig \
+                            --name ${EKS_CLUSTER_NAME} \
+                            --region ${AWS_REGION}
+                    """
+                    script {
+                        if (env.DEPLOY_STRATEGY == 'blue-green') {
+                            sh """
+                                # Update image in green deployment
+                                kubectl set image deployment/my-app-green \
+                                    my-app=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG} \
+                                    -n ${K8S_NAMESPACE}
+
+                                # Wait for green to be ready
+                                kubectl rollout status deployment/my-app-green \
+                                    -n ${K8S_NAMESPACE} --timeout=120s
+
+                                # Switch service traffic from blue to green
+                                kubectl patch service my-app-service \
+                                    -n ${K8S_NAMESPACE} \
+                                    -p '{"spec":{"selector":{"version":"green"}}}'
+                            """
+                        } else {
+                            // Rolling deployment (default)
+                            sh """
+                                kubectl set image deployment/my-app \
+                                    my-app=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG} \
+                                    -n ${K8S_NAMESPACE}
+
+                                kubectl rollout status deployment/my-app \
+                                    -n ${K8S_NAMESPACE} --timeout=180s
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                echo "Verifying deployment health..."
+                sh """
+                    # Check all pods are running
+                    kubectl get pods -n ${K8S_NAMESPACE} -l app=my-app
+
+                    # Verify minimum ready pods
+                    READY=\$(kubectl get deployment my-app -n ${K8S_NAMESPACE} \
+                        -o jsonpath='{.status.readyReplicas}')
+                    echo "Ready replicas: \$READY"
+
+                    if [ "\$READY" -lt "2" ]; then
+                        echo "Health check failed — not enough ready replicas"
+                        exit 1
+                    fi
+                    echo "Health check passed."
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployment successful! Build #${IMAGE_TAG} is live."
+            // Add Slack/email notification here
+        }
+        failure {
+            echo "Deployment failed. Initiating rollback..."
+            sh """
+                kubectl rollout undo deployment/my-app -n ${K8S_NAMESPACE}
+            """
+            // Add Slack/email alert here
+        }
+        always {
+            // Clean up local Docker images to save disk space
+            sh "docker rmi ${ECR_REPO}:${IMAGE_TAG} || true"
+        }
+    }
+}

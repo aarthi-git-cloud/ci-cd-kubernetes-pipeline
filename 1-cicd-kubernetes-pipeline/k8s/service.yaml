@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app-service
+  namespace: production
+  annotations:
+    # Use AWS ALB as the load balancer
+    service.beta.kubernetes.io/aws-load-balancer-type: "alb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  selector:
+    app: my-app
+    version: stable     # This label is switched during blue-green deployments
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+  type: LoadBalancer
