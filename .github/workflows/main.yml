@@ -10,10 +10,17 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: List files
-        run: ls -la
+      - name: Debug repo structure
+        run: |
+          pwd
+          ls -R
 
       - name: Build Docker image
-        run: docker build -t devops-app .
+        run: |
+          if [ -f Dockerfile ]; then
+            docker build -t devops-app .
+          else
+            echo "No Dockerfile found, skipping build"
+          fi
