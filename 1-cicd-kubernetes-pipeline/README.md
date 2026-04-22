@@ -142,3 +142,11 @@ See [docs/pipeline-setup.md](docs/pipeline-setup.md) for full setup guide.
 - Blue-green deployments require 2x resource capacity — plan cluster sizing accordingly
 - Always set `maxUnavailable: 0` for zero-downtime rolling updates
 - Health checks must be tuned per application — generic checks cause false rollbacks
+
+---
+
+## 📸 CI/CD Pipeline Execution
+
+Successful pipeline run:
+
+![Pipeline](screenshots/pipeline.png)
