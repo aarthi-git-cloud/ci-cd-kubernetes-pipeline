@@ -145,8 +145,3 @@ See [docs/pipeline-setup.md](docs/pipeline-setup.md) for full setup guide.
 
 ---
 
-## 📸 CI/CD Pipeline Execution
-
-Successful pipeline run:
-
-![Pipeline](screenshots/pipeline.png)
